@@ -48,13 +48,15 @@ export async function listUsers(params?: {
   role?: Role;
   search?: string;
 }) {
-  const query = new URLSearchParams();
-  query.set('page', String(params?.page ?? 1));
-  query.set('pageSize', String(params?.pageSize ?? 20));
-  if (params?.role) query.set('role', params.role);
-  if (params?.search) query.set('search', params.search);
-
-  const data = await api<ListUsersResponse>(`/api/users?${query.toString()}`);
+  const data = await api<ListUsersResponse>('/api/users/list', {
+    method: 'POST',
+    body: JSON.stringify({
+      page: params?.page ?? 1,
+      pageSize: params?.pageSize ?? 20,
+      role: params?.role,
+      search: params?.search
+    })
+  });
 
   const users = data.users ?? data.items ?? [];
 
@@ -69,7 +71,7 @@ export async function listUsers(params?: {
 }
 
 export async function updateUserRole(userId: string, role: Role) {
-  return api<{ user: { id: string; role: Role; updatedAt: string } }>(`/api/users/${userId}/role`, {
+  return api<{ id?: string; userId?: string; role: Role; updatedAt?: string }>(`/api/users/${userId}/role`, {
     method: 'PATCH',
     body: JSON.stringify({ role })
   });
@@ -88,13 +90,10 @@ export async function deleteUser(userId: string) {
   });
 }
 
-export async function changePassword(oldPassword: string, password: string) {
+export async function changePassword(password: string) {
   return api<void>('/api/users/change-password', {
     method: 'PATCH',
-    body: JSON.stringify({
-      oldPassword,
-      password
-    })
+    body: JSON.stringify({ password })
   });
 }
 

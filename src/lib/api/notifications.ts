@@ -7,10 +7,10 @@ type NotificationsResponse = {
 };
 
 export async function listNotifications(onlyUnacknowledged = false) {
-  const query = new URLSearchParams();
-  query.set('onlyUnacknowledged', String(onlyUnacknowledged));
-
-  const data = await api<NotificationsResponse>(`/api/notifications?${query.toString()}`);
+  const data = await api<NotificationsResponse>('/api/notifications/list', {
+    method: 'POST',
+    body: JSON.stringify({ onlyUnacknowledged })
+  });
 
   return {
     items: data.notifications ?? data.items ?? []

@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import Sidebar from '$lib/components/Sidebar.svelte';
-  import { changePassword, createInvite, deleteUser, listUsers, resetUserPassword, updateUserRole } from '$lib/api/users';
+  import { auth } from '$lib/stores/auth';
+  import { changePassword, createInvite, deleteUser, listUsers, updateUserRole } from '$lib/api/users';
   import type { Role, User } from '$lib/types';
 
   let users = $state<User[]>([]);
@@ -12,12 +13,19 @@
   let passwordError = $state('');
   let passwordLoading = $state(false);
   let sidebarCollapsed = $state(false);
+  const isAdmin = $derived($auth.user?.role === 'administrator');
 
   async function load() {
+    if (!isAdmin) {
+      users = [];
+      return;
+    }
+
     users = (await listUsers()).items;
   }
 
   async function changeRole(userId: string, role: Role) {
+    if (!isAdmin) return;
     await updateUserRole(userId, role);
     await load();
   }
@@ -28,6 +36,7 @@
   }
 
   async function removeUser(userId: string) {
+    if (!isAdmin) return;
     const confirmed = window.confirm('Opravdu chcete odstranit tohoto uživatele?');
     if (!confirmed) return;
 
@@ -35,21 +44,10 @@
     await load();
   }
 
-  async function resetPassword(userId: string) {
-    const password = window.prompt('Zadejte nové heslo pro uživatele:');
-    if (!password?.trim()) return;
-
-    await resetUserPassword(userId, password);
-    window.alert('Heslo uživatele bylo změněno.');
-  }
-
   async function updatePassword() {
     if (!newPassword.trim() || passwordLoading) return;
 
-    const confirmed = window.confirm(
-      'Opravdu chcete změnit heslo aktuálního účtu?'
-    );
-
+    const confirmed = window.confirm('Opravdu chcete změnit heslo aktuálního účtu?');
     if (!confirmed) return;
 
     passwordError = '';
@@ -57,8 +55,7 @@
     passwordLoading = true;
 
     try {
-      await changePassword('', newPassword);
-
+      await changePassword(newPassword);
       passwordMessage = 'Heslo bylo úspěšně změněno.';
       newPassword = '';
 
@@ -101,15 +98,9 @@
     <div class="mx-auto max-w-[1600px] px-4 pb-24 pt-6 sm:px-8 lg:px-10 lg:pb-6 xl:px-12">
       <div class="mb-8 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
-          <p class="text-sm font-semibold uppercase tracking-[0.2em] text-blue-600">
-            MeteoTrack Admin
-          </p>
-          <h1 class="mt-2 text-3xl font-bold tracking-tight text-slate-950">
-            Uživatelé
-          </h1>
-          <p class="mt-2 text-sm text-slate-500">
-            Správa uživatelů, rolí a pozvánek do systému.
-          </p>
+          <p class="text-sm font-semibold uppercase tracking-[0.2em] text-blue-600">MeteoTrack Admin</p>
+          <h1 class="mt-2 text-3xl font-bold tracking-tight text-slate-950">Uživatelé</h1>
+          <p class="mt-2 text-sm text-slate-500">Správa uživatelů, rolí a pozvánek do systému.</p>
         </div>
 
         <div class="rounded-3xl border border-slate-200 bg-white/90 px-5 py-4 shadow-sm backdrop-blur">
@@ -129,6 +120,7 @@
             <p class="mt-1 text-sm text-slate-500">Vytvoření pozvánky do MeteoTrack systému.</p>
           </div>
         </div>
+
         <form
           class="flex flex-col gap-3 lg:flex-row"
           onsubmit={(event) => {
@@ -160,10 +152,8 @@
       <section class="mb-6 rounded-[2rem] border border-white/60 bg-white/90 p-6 shadow-[0_24px_80px_-48px_rgba(15,23,42,0.35)] backdrop-blur">
         <div class="mb-5 flex items-center justify-between gap-3">
           <div>
-            <h2 class="text-lg font-semibold text-slate-950">Změna hesla</h2>
-            <p class="mt-1 text-sm text-slate-500">
-              Aktualizace hesla aktuálně přihlášeného uživatele.
-            </p>
+            <h2 class="text-lg font-semibold text-slate-950">Změna mého hesla</h2>
+            <p class="mt-1 text-sm text-slate-500">Tento formulář mění heslo aktuálně přihlášeného uživatele.</p>
           </div>
         </div>
 
@@ -188,6 +178,12 @@
           </button>
         </form>
 
+        {#if passwordError}
+          <div class="mt-4 rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
+            {passwordError}
+          </div>
+        {/if}
+
         {#if passwordMessage}
           <div class="mt-4 rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-700">
             {passwordMessage}
@@ -195,6 +191,7 @@
         {/if}
       </section>
 
+      {#if isAdmin}
       <section class="rounded-[2rem] border border-white/60 bg-white/90 p-6 shadow-[0_24px_80px_-48px_rgba(15,23,42,0.35)] backdrop-blur">
         <div class="mb-5 flex items-center justify-between gap-3">
           <div>
@@ -202,6 +199,7 @@
             <p class="mt-1 text-sm text-slate-500">Správa rolí a přístupů v systému.</p>
           </div>
         </div>
+
         <div class="overflow-x-auto rounded-3xl border border-slate-100 bg-slate-50/60">
           <table class="w-full min-w-[720px] text-left text-sm">
             <thead class="border-b border-slate-200 bg-white text-xs uppercase tracking-wide text-slate-500">
@@ -237,14 +235,6 @@
 
                       <button
                         type="button"
-                        onclick={() => resetPassword(user.id)}
-                        class="rounded-2xl border border-blue-100 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-700 shadow-sm transition hover:border-blue-200 hover:bg-blue-100"
-                      >
-                        Reset hesla
-                      </button>
-
-                      <button
-                        type="button"
                         onclick={() => removeUser(user.id)}
                         class="rounded-2xl border border-red-100 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700 shadow-sm transition hover:border-red-200 hover:bg-red-100"
                       >
@@ -258,12 +248,14 @@
           </table>
         </div>
       </section>
+    {:else}
+      <section class="rounded-[2rem] border border-white/60 bg-white/90 p-8 text-center shadow-[0_24px_80px_-48px_rgba(15,23,42,0.35)] backdrop-blur">
+        <h2 class="text-xl font-semibold text-slate-950">Nemáte oprávnění</h2>
+        <p class="mt-2 text-sm text-slate-500">
+          Správa uživatelů je dostupná pouze administrátorům.
+        </p>
+      </section>
+    {/if}
     </div>
   </main>
 </div>
-
-        {#if passwordError}
-          <div class="mt-4 rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
-            {passwordError}
-          </div>
-        {/if}
