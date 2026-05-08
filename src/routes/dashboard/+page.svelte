@@ -67,12 +67,6 @@
     return 'bg-slate-400';
   }
 
-  function notificationIcon(type: NotificationItem['type']) {
-    if (type === 'danger') return '⛔';
-    if (type === 'warning') return '⚠️';
-    return 'ℹ️';
-  }
-
   function normalizeStatus(status: string | undefined | null): Gateway['status'] {
     if (status === 'online' || status === 'offline' || status === 'unknown') return status;
     return 'unknown';
@@ -338,7 +332,6 @@
           <div class="mb-5 grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(500px,1200px)_minmax(0,0.35fr)] xl:items-start">
             <div>
               <h2 class="text-base font-semibold">Aktuální hodnoty – {selectedGateway?.name ?? 'Gateway'}</h2>
-              <p class="text-sm text-slate-500">Živá data z posledního přenosu zařízení</p>
             </div>
 
             <div class="w-full rounded-2xl border border-slate-100 bg-slate-50/70 px-4 py-3">
@@ -437,9 +430,6 @@
               </div>
             </div>
           </div>
-
-
-
           <aside class="panel">
             <div class="mb-4 flex items-center justify-between">
               <h2 class="text-base font-semibold">Poslední notifikace</h2>
@@ -448,15 +438,47 @@
 
             <div class="space-y-3">
               {#each visibleNotifications as item}
-                <div class="flex gap-3 rounded-2xl border border-slate-100 bg-slate-50/70 p-3 text-sm">
-                  <span>{notificationIcon(item.type)}</span>
-                  <div class="min-w-0 flex-1">
-                    <p class="font-medium text-slate-900">{item.text}</p>
-                    <p class="mt-1 text-xs text-slate-500">Gateway {item.gatewayId ?? 'Systém'}</p>
+                <div class="rounded-3xl border border-slate-200 bg-slate-50/70 p-4 transition-all hover:border-blue-200 hover:bg-white hover:shadow-md">
+                  <div class="flex items-start gap-3">
+                    <div
+                            class={`mt-1.5 h-3 w-3 shrink-0 rounded-full ${
+            item.type === 'danger'
+              ? 'bg-red-500'
+              : item.type === 'warning'
+                ? 'bg-amber-500'
+                : 'bg-blue-500'
+          }`}
+                    ></div>
+
+                    <div class="min-w-0 flex-1">
+                      <div class="mb-2 flex flex-wrap items-center gap-2">
+            <span
+                    class={`rounded-full px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide ${
+                item.type === 'danger'
+                  ? 'bg-red-100 text-red-700'
+                  : item.type === 'warning'
+                    ? 'bg-amber-100 text-amber-700'
+                    : 'bg-blue-100 text-blue-700'
+              }`}
+            >
+              {item.type}
+            </span>
+
+                        <span class="rounded-full bg-slate-200 px-2.5 py-1 text-[11px] font-medium text-slate-700">
+              gateway {item.gatewayId ?? 'system'}
+            </span>
+                      </div>
+
+                      <p class="text-sm font-semibold leading-5 text-slate-900">
+                        {item.text}
+                      </p>
+                    </div>
                   </div>
                 </div>
               {:else}
-                <p class="rounded-2xl bg-slate-50 p-4 text-sm text-slate-500">Žádné aktivní notifikace.</p>
+                <div class="rounded-3xl border border-dashed border-slate-200 bg-slate-50 p-5 text-center text-sm text-slate-500">
+                  Žádné aktivní notifikace.
+                </div>
               {/each}
             </div>
           </aside>

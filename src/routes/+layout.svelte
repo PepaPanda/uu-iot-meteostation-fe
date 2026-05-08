@@ -10,7 +10,7 @@
     let { children } = $props();
     let checkingSession = $state(true);
 
-    const publicRoutes = ['/login'];
+    const publicRoutes = ['/login', '/register'];
 
     function isPublicRoute(pathname: string): boolean {
         return publicRoutes.some((route) => pathname === route || pathname.startsWith(`${route}/`));

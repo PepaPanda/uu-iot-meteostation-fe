@@ -1,9 +1,20 @@
 import { api } from './client';
 import type { NotificationItem } from '$lib/types';
 
+type NotificationsResponse = {
+  items?: NotificationItem[];
+  notifications?: NotificationItem[];
+};
+
 export async function listNotifications(onlyUnacknowledged = false) {
-  const qs = onlyUnacknowledged ? '?onlyUnacknowledged=true' : '';
-  return api<{ items: NotificationItem[] }>(`/api/notifications${qs}`);
+  const query = new URLSearchParams();
+  query.set('onlyUnacknowledged', String(onlyUnacknowledged));
+
+  const data = await api<NotificationsResponse>(`/api/notifications?${query.toString()}`);
+
+  return {
+    items: data.notifications ?? data.items ?? []
+  };
 }
 
 export async function acknowledgeNotification(id: string) {

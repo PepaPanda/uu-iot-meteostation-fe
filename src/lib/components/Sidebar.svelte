@@ -25,6 +25,21 @@
     { href: '/notifications', label: 'Notifikace', icon: '!' },
     { href: '/users', label: 'Uživatelé', icon: '♙' }
   ];
+
+  function userInitials(name: string | null | undefined): string {
+    const parts = name?.trim().split(/\s+/).filter(Boolean) ?? [];
+
+    if (parts.length >= 2) {
+      return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+    }
+
+    if (parts.length === 1) {
+      return parts[0].slice(0, 2).toUpperCase();
+    }
+
+    return 'U';
+  }
+
   onMount(() => {
     if (!get(auth).user) {
       me().catch(() => {
@@ -80,7 +95,7 @@
     <div class={`${collapsed ? 'border-0 bg-transparent p-0 shadow-none' : 'rounded-3xl border border-slate-200 bg-slate-50 p-3'}`}>
       <div class={`flex items-center ${collapsed ? 'justify-center' : 'gap-3'}`}>
         <div class="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-slate-200 text-sm font-semibold text-slate-700">
-          {$auth.user?.nickname?.slice(0, 2).toUpperCase() ?? 'U'}
+          {userInitials($auth.user?.nickname)}
         </div>
         {#if !collapsed}
           <div class="min-w-0">
