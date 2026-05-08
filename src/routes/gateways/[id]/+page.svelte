@@ -20,6 +20,7 @@
   let temperatureTrend = $state<number[]>([]);
   let stream = $state<EventSource | null>(null);
   let loading = $state(true);
+  let loadError = $state('');
   let sidebarCollapsed = $state(false);
 
   let id = $derived($page.params.id ?? '');
@@ -87,38 +88,53 @@
   async function load() {
     if (!id) {
       loading = false;
+      loadError = 'Gateway nebyla nalezena.';
       return;
     }
 
-    gateway = (await getGateway(id)).gateway;
-    current = (await getCurrentTelemetry(id)).telemetry;
-    health = await getGatewayHealth(id).catch(() => null);
+    loading = true;
+    loadError = '';
 
-    if (gateway) {
-      gateway = {
-        ...gateway,
-        status: normalizeStatus(health?.status ?? gateway.status),
-        lastTelemetryReceivedAt:
-          health?.lastTelemetryAtUtc ?? gateway.lastTelemetryReceivedAt ?? current?.receivedAtUtc ?? null
+    try {
+      gateway = (await getGateway(id)).gateway;
+      current = await getCurrentTelemetry(id)
+        .then((response) => response.telemetry)
+        .catch(() => null);
+      health = await getGatewayHealth(id).catch(() => null);
+
+      if (gateway) {
+        gateway = {
+          ...gateway,
+          status: normalizeStatus(health?.status ?? gateway.status),
+          lastTelemetryReceivedAt:
+            health?.lastTelemetryAtUtc ?? gateway.lastTelemetryReceivedAt ?? current?.receivedAtUtc ?? null
+        };
+      }
+
+      const now = new Date();
+      const from = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
+      const historyResponse = await getTelemetryHistory(id, from, now.toISOString(), 500).catch(() => ({ items: [] }));
+      const historyItems = getHistoryItems(historyResponse);
+      temperatureTrend = telemetryTemperatureValues(historyItems, current?.temperature);
+
+      stream = createTelemetryStream(id);
+      stream.onmessage = (event) => {
+        try {
+          const parsed = JSON.parse(event.data);
+          current = parsed.data ?? parsed;
+          temperatureTrend = appendTrendValue(temperatureTrend, current?.temperature);
+        } catch {}
       };
+
+      stream.onerror = () => {
+        stream?.close();
+        stream = null;
+      };
+    } catch (err) {
+      loadError = err instanceof Error ? err.message : 'Data gatewaye nejsou k dispozici.';
+    } finally {
+      loading = false;
     }
-
-    const now = new Date();
-    const from = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
-    const historyResponse = await getTelemetryHistory(id, from, now.toISOString(), 500).catch(() => ({ items: [] }));
-    const historyItems = getHistoryItems(historyResponse);
-    temperatureTrend = telemetryTemperatureValues(historyItems, current?.temperature);
-
-    stream = createTelemetryStream(id);
-    stream.onmessage = (event) => {
-      try {
-        const parsed = JSON.parse(event.data);
-        current = parsed.data ?? parsed;
-        temperatureTrend = appendTrendValue(temperatureTrend, current?.temperature);
-      } catch {}
-    };
-
-    loading = false;
   }
 
   onMount(() => {
@@ -149,6 +165,19 @@
           <div class="rounded-3xl border border-slate-200 bg-white p-8 text-center shadow-sm">
             <div class="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-4 border-blue-100 border-t-blue-600"></div>
             <p class="font-medium text-slate-700">Načítám detail gatewaye…</p>
+          </div>
+        </div>
+      {:else if loadError && !gateway}
+        <div class="grid min-h-[50vh] place-items-center">
+          <div class="max-w-md rounded-3xl border border-slate-200 bg-white p-8 text-center shadow-sm">
+            <h1 class="text-xl font-bold text-slate-950">Data nejsou k dispozici</h1>
+            <p class="mt-2 text-sm text-slate-500">{loadError}</p>
+            <a
+              href="/gateways"
+              class="mt-5 inline-flex rounded-2xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700"
+            >
+              Zpět na gatewaye
+            </a>
           </div>
         </div>
       {:else}

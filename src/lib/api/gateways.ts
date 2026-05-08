@@ -83,3 +83,20 @@ export async function getGateway(id: string) {
   const g = await api<BackendGateway>(`/api/gateways/${id}`);
   return { gateway: mapGateway(g) };
 }
+
+export async function createGateway(input: {
+  name: string;
+  description?: string;
+  location?: string;
+  latitude?: number;
+  longitude?: number;
+}) {
+  return api<{
+    gateway: BackendGateway;
+    secret?: string;
+    gatewayToken?: string;
+  }>('/api/gateways', {
+    method: 'POST',
+    body: JSON.stringify(input)
+  });
+}
