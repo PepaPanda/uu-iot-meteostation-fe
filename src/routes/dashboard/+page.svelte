@@ -26,7 +26,9 @@
   let loading = $state(true);
   let error = $state('');
   let stream: EventSource | null = null;
+  let refreshInterval: ReturnType<typeof setInterval> | null = null;
   let sidebarCollapsed = $state(false);
+  const SELECTED_GATEWAY_STORAGE_KEY = 'dashboardSelectedGatewayId';
 
   let selectedGateway = $derived(
     gateways.find((g) => g.id === selectedGatewayId)
@@ -128,12 +130,38 @@
     return [...values, nextValue].slice(-24);
   }
 
+  function normalizeTelemetryUpdate(input: unknown): Telemetry {
+    const record = input as Record<string, unknown>;
+
+    return {
+      ...(record as Telemetry),
+      temperature: toNumber(record.temperature ?? record.temp) ?? null,
+      humidity: toNumber(record.humidity) ?? null,
+      pressure: toNumber(record.pressure ?? record.pressure_hpa) ?? null,
+      lighting: toNumber(record.lighting ?? record.light ?? record.lux) ?? null,
+      raindropsAmount: toNumber(record.raindropsAmount ?? record.raindrops_amount) ?? null,
+      batteryPercent: toNumber(record.batteryPercent ?? record.battery_percent) ?? null,
+      batteryVoltage: toNumber(record.batteryVoltage ?? record.battery_voltage) ?? null,
+      wifiRssi: toNumber(record.wifiRssi ?? record.wifi_rssi) ?? null,
+      receivedAtUtc:
+        typeof record.receivedAtUtc === 'string'
+          ? record.receivedAtUtc
+          : typeof record.created_at === 'string'
+            ? record.created_at
+            : typeof record.createdAt === 'string'
+              ? record.createdAt
+              : new Date().toISOString()
+    } as Telemetry;
+  }
+
   async function loadDashboard() {
     loading = true;
     error = '';
 
     try {
+      console.info('[dashboard] loadDashboard started');
       const gatewayResult = await listGateways();
+      console.info('[dashboard] gateways response', gatewayResult);
 
       gateways = await Promise.all(
         gatewayResult.items.map(async (gateway) => {
@@ -146,14 +174,25 @@
           };
         })
       );
-      selectedGatewayId = isValidGatewayId(selectedGatewayId) ? selectedGatewayId : gateways[0]?.id || '';
+      const storedGatewayId = localStorage.getItem(SELECTED_GATEWAY_STORAGE_KEY);
+      selectedGatewayId = isValidGatewayId(selectedGatewayId)
+        ? selectedGatewayId
+        : isValidGatewayId(storedGatewayId) && gateways.some((gateway) => gateway.id === storedGatewayId)
+          ? storedGatewayId
+          : gateways[0]?.id || '';
+      console.info('[dashboard] selected gateway id', selectedGatewayId, 'is valid:', isValidGatewayId(selectedGatewayId));
 
-      if (isValidGatewayId(selectedGatewayId)) await loadGatewayData(selectedGatewayId);
+      if (isValidGatewayId(selectedGatewayId)) {
+        await loadGatewayData(selectedGatewayId);
+      } else {
+        console.warn('[dashboard] no valid gateway id, stream will not start');
+      }
 
       notifications = await listNotifications(true)
         .then((result) => result.items)
         .catch(() => []);
     } catch (e) {
+      console.error('[dashboard] loadDashboard failed', e);
       error = e instanceof Error ? e.message : 'Nepodařilo se načíst dashboard';
     } finally {
       loading = false;
@@ -161,9 +200,17 @@
   }
 
   async function loadGatewayData(id: string) {
-    if (!isValidGatewayId(id)) return;
+    console.info('[dashboard] loadGatewayData started', id);
+    if (!isValidGatewayId(id)) {
+      console.warn('[dashboard] loadGatewayData aborted because id is invalid', id);
+      return;
+    }
     stream?.close();
     stream = null;
+    if (refreshInterval) {
+      clearInterval(refreshInterval);
+      refreshInterval = null;
+    }
     current = null;
     health = null;
     temperatureTrend = [];
@@ -198,6 +245,9 @@
         .then((result) => result as unknown as Telemetry)
         .catch(() => null);
     }
+    if (current) {
+      current = normalizeTelemetryUpdate(current);
+    }
 
     const historyResponse = await getTelemetryHistory(id, from, to, 500).catch(() => ({ items: [] }));
     const historyItems = getHistoryItems(historyResponse);
@@ -218,7 +268,30 @@
       current?.humidity
     );
 
+    console.info('[dashboard] calling setupStream', id);
     setupStream(id);
+    refreshInterval = setInterval(() => {
+      refreshCurrentTelemetry(id);
+    }, 60000); // Time to wait before fetching telemetry again (in milliseconds).
+  }
+
+  async function refreshCurrentTelemetry(id: string) {
+    if (!isValidGatewayId(id)) return;
+
+    const nextCurrent = await getCurrentTelemetry(id)
+      .then((result) => result.telemetry ?? (result as unknown as Telemetry))
+      .catch(() => null);
+
+    if (!nextCurrent) return;
+
+    const normalizedTelemetry = normalizeTelemetryUpdate(nextCurrent);
+    const previousTimestamp = current?.receivedAtUtc ?? null;
+    const nextTimestamp = normalizedTelemetry.receivedAtUtc ?? null;
+
+    if (nextTimestamp && nextTimestamp === previousTimestamp) return;
+
+    console.info('[dashboard] polling telemetry update', normalizedTelemetry);
+    applyTelemetryUpdate(normalizedTelemetry);
   }
 
   async function handleGatewayChange(event: Event) {
@@ -226,46 +299,98 @@
     const nextId = target.value;
 
     selectedGatewayId = nextId;
+    if (isValidGatewayId(nextId)) {
+      localStorage.setItem(SELECTED_GATEWAY_STORAGE_KEY, nextId);
+    }
 
     if (isValidGatewayId(nextId)) {
       await loadGatewayData(nextId);
     }
+  }
+  function applyTelemetryUpdate(telemetry: Telemetry) {
+    const normalizedTelemetry = normalizeTelemetryUpdate(telemetry);
+    current = normalizedTelemetry;
+
+    temperatureTrend = appendTrendValue(temperatureTrend, normalizedTelemetry.temperature);
+    pressureTrend = appendTrendValue(pressureTrend, normalizedTelemetry.pressure);
+    humidityTrend = appendTrendValue(humidityTrend, normalizedTelemetry.humidity);
+
+    const telemetryRecord = normalizedTelemetry as Telemetry & Record<string, unknown>;
+    const latestTime = normalizedTelemetry.receivedAtUtc ?? new Date().toISOString();
+    const batteryLevel = toNumber(telemetryRecord.batteryPercent ?? telemetryRecord.battery_percent);
+    const wifiStrength = toNumber(telemetryRecord.wifiRssi ?? telemetryRecord.wifi_rssi);
+
+    health = {
+      gatewayId: Number(selectedGatewayId),
+      status: 'online',
+      lastTelemetryAtUtc: latestTime,
+      nodeBatteryLevel: batteryLevel ?? health?.nodeBatteryLevel ?? null,
+      nodeWifiStrength: wifiStrength ?? health?.nodeWifiStrength ?? null
+    };
+
+    gateways = gateways.map((gateway) =>
+      gateway.id === selectedGatewayId
+        ? {
+            ...gateway,
+            status: 'online',
+            lastTelemetryReceivedAt: latestTime
+          }
+        : gateway
+    );
   }
 
   function setupStream(id: string) {
     stream?.close();
     stream = createTelemetryStream(id);
 
-    stream.addEventListener('telemetry', (event) => {
+    console.info('[dashboard] telemetry stream created for gateway', id, stream.url);
+
+    stream.onopen = () => {
+      console.info('[dashboard] telemetry stream opened for gateway', id);
+    };
+
+    stream.onerror = (event) => {
+      console.warn('[dashboard] telemetry stream error for gateway', id, event);
+    };
+
+    function handleStreamEvent(event: MessageEvent, eventName: string) {
       try {
-        const message = event as MessageEvent;
-        const parsed = JSON.parse(message.data);
-        const telemetry = parsed.data ?? parsed;
-        current = telemetry;
-        temperatureTrend = appendTrendValue(temperatureTrend, telemetry.temperature);
-        pressureTrend = appendTrendValue(pressureTrend, telemetry.pressure);
-        humidityTrend = appendTrendValue(humidityTrend, telemetry.humidity);
-      } catch {
-        // Ignore malformed stream event.
+        console.info('[dashboard] SSE event received', eventName, event.data);
+
+        const parsed = JSON.parse(event.data);
+        const telemetry = parsed.data ?? parsed.telemetry ?? parsed.measurement ?? parsed;
+
+        console.info('[dashboard] normalized telemetry update', normalizeTelemetryUpdate(telemetry));
+        applyTelemetryUpdate(telemetry as Telemetry);
+      } catch (error) {
+        console.warn('[dashboard] malformed stream event ignored', eventName, error, event.data);
       }
+    }
+
+    stream.addEventListener('telemetry', (event) => {
+      handleStreamEvent(event as MessageEvent, 'telemetry');
+    });
+
+    stream.addEventListener('measurement', (event) => {
+      handleStreamEvent(event as MessageEvent, 'measurement');
+    });
+
+    stream.addEventListener('update', (event) => {
+      handleStreamEvent(event as MessageEvent, 'update');
     });
 
     stream.onmessage = (event) => {
-      try {
-        const parsed = JSON.parse(event.data);
-        const telemetry = parsed.data ?? parsed;
-        current = telemetry;
-        temperatureTrend = appendTrendValue(temperatureTrend, telemetry.temperature);
-        pressureTrend = appendTrendValue(pressureTrend, telemetry.pressure);
-        humidityTrend = appendTrendValue(humidityTrend, telemetry.humidity);
-      } catch {
-        // Ignore malformed stream event.
-      }
+      handleStreamEvent(event, 'message');
     };
   }
 
   onMount(() => {
+    console.info('[dashboard] component mounted');
     sidebarCollapsed = localStorage.getItem('sidebarCollapsed') === 'true';
+    const storedGatewayId = localStorage.getItem(SELECTED_GATEWAY_STORAGE_KEY);
+    if (isValidGatewayId(storedGatewayId)) {
+      selectedGatewayId = storedGatewayId;
+    }
 
     const handleSidebarChange = (event: Event) => {
       sidebarCollapsed = (event as CustomEvent<boolean>).detail === true;
@@ -279,7 +404,10 @@
     };
   });
 
-  onDestroy(() => stream?.close());
+  onDestroy(() => {
+    stream?.close();
+    if (refreshInterval) clearInterval(refreshInterval);
+  });
 </script>
 
 <div class="app-shell">
@@ -291,7 +419,7 @@
         <div>
           <p class="mb-1 text-3xl font-medium text-blue-600">MeteoTrack</p>
           <h1 class="text-3xl font-bold tracking-tight">Přehled</h1>
-          <p class="mt-1 text-sm text-slate-500">Aktuální přehled všech gatewayí a dat ze zařízení</p>
+          <p class="mt-1 text-sm text-slate-500">Aktuální hodnoty – {selectedGateway?.name ?? 'Gateway'}</p>
         </div>
 
         <div class="flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -329,10 +457,7 @@
         </div>
       {:else}
         <section class="panel panel-inner">
-          <div class="mb-5 grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(500px,1200px)_minmax(0,0.35fr)] xl:items-start">
-            <div>
-              <h2 class="text-base font-semibold">Aktuální hodnoty – {selectedGateway?.name ?? 'Gateway'}</h2>
-            </div>
+          <div class="mb-5 grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0px,0px)_minmax(0,0.35fr)] xl:items-start">
 
             <div class="w-full rounded-2xl border border-slate-100 bg-slate-50/70 px-4 py-3">
               <div class="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
