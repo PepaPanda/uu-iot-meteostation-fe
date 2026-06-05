@@ -1,10 +1,10 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import { page } from '$app/stores';
+  import { page } from '$app/state';
   import Sidebar from '$lib/components/Sidebar.svelte';
   import MetricCard from '$lib/components/MetricCard.svelte';
   import StatusBadge from '$lib/components/StatusBadge.svelte';
-import { getCurrentTelemetry, getTelemetryHistory, createTelemetryStream, getTelemetryPrediction } from '$lib/api/telemetry';
+  import { getCurrentTelemetry, getTelemetryHistory, createTelemetryStream, getTelemetryPrediction } from '$lib/api/telemetry';
   import type { Gateway, Telemetry } from '$lib/types';
   import { getGateway, getGatewayHealth } from '$lib/api/gateways';
   import TelemetryTrendPanel, { type TrendPoint, type TrendRange } from '$lib/components/TelemetryTrendPanel.svelte';
@@ -27,11 +27,17 @@ import { getCurrentTelemetry, getTelemetryHistory, createTelemetryStream, getTel
   let rotateSecretLoading = $state(false);
   let rotatedGatewaySecret = $state('');
   let rotateSecretError = $state('');
-let sidebarCollapsed = $state(false);
+  let sidebarCollapsed = $state(false);
 
-let prediction = $state<{ generatedAtUtc?: string; temperatureTrend?: string; pressureTrend?: string; humidityTrend?: string; summary?: string } | null>(null);
+  let prediction = $state<{
+    generatedAtUtc?: string;
+    temperatureTrend?: string;
+    pressureTrend?: string;
+    humidityTrend?: string;
+    summary?: string;
+  } | null>(null);
 
-  let id = $derived($page.params.id ?? '');
+  let id = $derived(page.params.id ?? '');
 
   function formatDateTime(value: string | null | undefined): string {
     if (!value) return '-';
@@ -79,21 +85,31 @@ let prediction = $state<{ generatedAtUtc?: string; temperatureTrend?: string; pr
     fallback: number | null | undefined,
     fallbackTime?: string | null
   ): TrendPoint[] {
-    const values = items
-      .map((item) => {
+    const values: TrendPoint[] = items
+      .map((item): TrendPoint | null => {
         const record = item as Record<string, unknown>;
         const time =
           typeof record.receivedAtUtc === 'string'
             ? record.receivedAtUtc
-            : typeof record.measuredAtUtc === 'string'
-              ? record.measuredAtUtc
-              : typeof record.bucketStartUtc === 'string'
-                ? record.bucketStartUtc
-                : typeof record.created_at === 'string'
-                  ? record.created_at
-                  : typeof record.createdAt === 'string'
-                    ? record.createdAt
-                    : undefined;
+            : typeof record.received_at_utc === 'string'
+              ? record.received_at_utc
+              : typeof record.received_at === 'string'
+                ? record.received_at
+                : typeof record.measuredAtUtc === 'string'
+                  ? record.measuredAtUtc
+                  : typeof record.measured_at_utc === 'string'
+                    ? record.measured_at_utc
+                    : typeof record.measured_at === 'string'
+                      ? record.measured_at
+                      : typeof record.bucketStartUtc === 'string'
+                        ? record.bucketStartUtc
+                        : typeof record.bucket_start_utc === 'string'
+                          ? record.bucket_start_utc
+                          : typeof record.createdAt === 'string'
+                            ? record.createdAt
+                            : typeof record.created_at === 'string'
+                              ? record.created_at
+                              : undefined;
 
         for (const key of keys) {
           const value = toNumber(record[key]);
@@ -206,7 +222,8 @@ let prediction = $state<{ generatedAtUtc?: string; temperatureTrend?: string; pr
       const body = await response.json().catch(() => null);
 
       if (!response.ok) {
-        throw new Error(body?.message ?? 'Token gatewaye se nepodařilo obnovit.');
+        rotateSecretError = body?.message ?? 'Token gatewaye se nepodařilo obnovit.';
+        return;
       }
 
       rotatedGatewaySecret = body?.secret ?? '';
@@ -292,7 +309,7 @@ let prediction = $state<{ generatedAtUtc?: string; temperatureTrend?: string; pr
   <Sidebar />
 
   <main class={`transition-[padding] duration-300 ${sidebarCollapsed ? 'lg:pl-20' : 'lg:pl-64'}`}>
-    <div class="mx-auto max-w-[1600px] px-4 pb-24 pt-6 sm:px-8 lg:px-10 lg:pb-6 xl:px-12">
+    <div class="mx-auto max-w-400 px-4 pb-24 pt-6 sm:px-8 lg:px-10 lg:pb-6 xl:px-12">
       {#if loading}
         <div class="grid min-h-[50vh] place-items-center">
           <div class="rounded-3xl border border-slate-200 bg-white p-8 text-center shadow-sm">
@@ -344,7 +361,7 @@ let prediction = $state<{ generatedAtUtc?: string; temperatureTrend?: string; pr
         </section>
 
         {#if prediction}
-          <section class="mt-8 rounded-[2rem] border border-white/60 bg-white/90 p-6 shadow-[0_24px_80px_-48px_rgba(15,23,42,0.35)] backdrop-blur">
+          <section class="mt-8 rounded-4xl border border-white/60 bg-white/90 p-6 shadow-[0_24px_80px_-48px_rgba(15,23,42,0.35)] backdrop-blur">
             <div class="flex flex-col gap-2">
               <h2 class="text-lg font-semibold text-slate-950">Predikce počasí</h2>
               <p class="text-sm text-slate-500">
@@ -374,8 +391,8 @@ let prediction = $state<{ generatedAtUtc?: string; temperatureTrend?: string; pr
             </div>
           </section>
         {/if}
-        <section class="mt-8 grid gap-6 lg:grid-cols-[360px_minmax(0,1fr)]">
-          <aside class="rounded-[2rem] border border-white/60 bg-white/90 p-6 shadow-[0_24px_80px_-48px_rgba(15,23,42,0.35)] backdrop-blur">
+        <section class="mt-8 grid gap-6 lg:grid-cols-[22.5rem_minmax(0,1fr)]">
+          <aside class="rounded-4xl border border-white/60 bg-white/90 p-6 shadow-[0_24px_80px_-48px_rgba(15,23,42,0.35)] backdrop-blur">
             <div class="mb-5 flex items-center justify-between gap-3">
               <h2 class="text-lg font-semibold text-slate-950">Informace</h2>
               <StatusBadge status={gateway?.status} />

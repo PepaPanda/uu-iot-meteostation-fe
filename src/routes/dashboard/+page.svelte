@@ -631,7 +631,7 @@
   <Sidebar />
 
   <main class={`transition-[padding] duration-300 ${sidebarCollapsed ? 'lg:pl-20' : 'lg:pl-64'}`}>
-    <div class="mx-auto max-w-[1600px] px-4 pb-24 pt-6 sm:px-8 lg:px-10 lg:pb-6 xl:px-12">
+    <div class="mx-auto max-w-400 px-4 pb-24 pt-6 sm:px-8 lg:px-10 lg:pb-6 xl:px-12">
       <header class="mb-6 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div>
           <p class="mb-1 text-3xl font-medium text-blue-600">MeteoTrack</p>
@@ -666,14 +666,14 @@
       {/if}
 
       {#if loading}
-        <div class="grid min-h-[420px] place-items-center rounded-3xl border border-slate-200 bg-white shadow-sm">
+        <div class="grid min-h-105 place-items-center rounded-3xl border border-slate-200 bg-white shadow-sm">
           <div class="text-center">
             <div class="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-4 border-blue-100 border-t-blue-600"></div>
             <p class="font-medium text-slate-700">Načítám dashboard…</p>
           </div>
         </div>
       {:else}
-        <section class="rounded-[2rem] border border-white/60 bg-white/90 p-6 shadow-[0_24px_80px_-48px_rgba(15,23,42,0.35)] backdrop-blur">
+        <section class="rounded-4xl border border-white/60 bg-white/90 p-6 shadow-[0_24px_80px_-48px_rgba(15,23,42,0.35)] backdrop-blur">
           <div class="mb-5 grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0px,0px)_minmax(0,0.35fr)] xl:items-start">
 
             <div class="w-full rounded-2xl border border-slate-100 bg-slate-50/70 px-4 py-3">
@@ -720,7 +720,7 @@
         </section>
 
         {#if prediction}
-          <section class="mt-8 rounded-[2rem] border border-white/60 bg-white/90 p-6 shadow-[0_24px_80px_-48px_rgba(15,23,42,0.35)] backdrop-blur">
+          <section class="mt-8 rounded-4xl border border-white/60 bg-white/90 p-6 shadow-[0_24px_80px_-48px_rgba(15,23,42,0.35)] backdrop-blur">
             <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div>
                 <h2 class="text-base font-semibold">Predikce počasí</h2>
@@ -729,7 +729,7 @@
                 </p>
               </div>
 
-              <div class="grid gap-3 sm:grid-cols-3 lg:min-w-[520px]">
+              <div class="grid gap-3 sm:grid-cols-3 lg:min-w-130">
                 <div class="rounded-2xl bg-slate-50 px-4 py-3">
                   <p class="text-xs font-medium uppercase tracking-wide text-slate-500">Teplota</p>
                   <p class="mt-1 text-sm font-semibold text-slate-900">{prediction.temperatureTrend}</p>
@@ -761,7 +761,7 @@
             rangeLabel={getTrendRangeDates(selectedTrendRange).label}
             onRangeChange={handleTrendRangeChange}
           />
-          <aside class="rounded-[2rem] border border-white/60 bg-white/90 p-6 shadow-[0_24px_80px_-48px_rgba(15,23,42,0.35)] backdrop-blur">
+          <aside class="rounded-4xl border border-white/60 bg-white/90 p-6 shadow-[0_24px_80px_-48px_rgba(15,23,42,0.35)] backdrop-blur">
             <div class="mb-4 flex items-center justify-between">
               <h2 class="text-base font-semibold">Poslední notifikace</h2>
               <a href="/notifications" class="primary-link">Zobrazit vše</a>
@@ -815,7 +815,7 @@
           </aside>
         </section>
 
-        <section class="mt-8 rounded-[2rem] border border-white/60 bg-white/90 p-6 shadow-[0_24px_80px_-48px_rgba(15,23,42,0.35)] backdrop-blur">
+        <section class="mt-8 rounded-4xl border border-white/60 bg-white/90 p-6 shadow-[0_24px_80px_-48px_rgba(15,23,42,0.35)] backdrop-blur">
           <div class="mb-4 flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
             <div>
               <h2 class="text-base font-semibold">Všechny gatewaye</h2>
