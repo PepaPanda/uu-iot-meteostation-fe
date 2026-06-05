@@ -2,12 +2,12 @@
   import { onDestroy, onMount } from 'svelte';
   import Sidebar from '$lib/components/Sidebar.svelte';
   import MetricCard from '$lib/components/MetricCard.svelte';
-  import MiniLineChart from '$lib/components/MiniLineChart.svelte';
+  import TelemetryTrendPanel, { type TrendPoint, type TrendRange } from '$lib/components/TelemetryTrendPanel.svelte';
   import StatusBadge from '$lib/components/StatusBadge.svelte';
   import { getGatewayHealth, listGateways } from '$lib/api/gateways';
-  import { getCurrentTelemetry, getTelemetryHistory, createTelemetryStream } from '$lib/api/telemetry';
+  import { getCurrentTelemetry, getTelemetryHistory, getTelemetryPrediction, getTelemetryTrends, createTelemetryStream } from '$lib/api/telemetry';
   import { listNotifications } from '$lib/api/notifications';
-  import type { Gateway, NotificationItem, Telemetry } from '$lib/types';
+  import type { Gateway, NotificationItem, Telemetry, TelemetryPrediction } from '$lib/types';
 
   let gateways = $state<Gateway[]>([]);
   let selectedGatewayId = $state('');
@@ -20,15 +20,18 @@
     nodeWifiStrength: number | null;
   } | null>(null);
   let notifications = $state<NotificationItem[]>([]);
-  let temperatureTrend = $state<number[]>([]);
-  let pressureTrend = $state<number[]>([]);
-  let humidityTrend = $state<number[]>([]);
+  let temperatureTrend = $state<TrendPoint[]>([]);
+  let pressureTrend = $state<TrendPoint[]>([]);
+  let humidityTrend = $state<TrendPoint[]>([]);
+  let selectedTrendRange = $state<TrendRange>('today');
+  let prediction = $state<TelemetryPrediction | null>(null);
   let loading = $state(true);
   let error = $state('');
   let stream: EventSource | null = null;
   let refreshInterval: ReturnType<typeof setInterval> | null = null;
   let sidebarCollapsed = $state(false);
   const SELECTED_GATEWAY_STORAGE_KEY = 'dashboardSelectedGatewayId';
+  const CHART_TIME_ZONE = 'Europe/Prague';
 
   let selectedGateway = $derived(
     gateways.find((g) => g.id === selectedGatewayId)
@@ -52,16 +55,223 @@
 
   const visibleNotifications = $derived(notifications.slice(0, 4));
 
+
   function formatTime(value: string | null | undefined) {
     if (!value) return '-';
     return new Date(value).toLocaleString('cs-CZ');
   }
 
-  function statusPillClass(status: Gateway['status']): string {
-    if (status === 'online') return 'bg-emerald-50 text-emerald-700';
-    if (status === 'offline') return 'bg-red-50 text-red-700';
-    return 'bg-slate-100 text-slate-600';
+  function getDatePartsInTimeZone(date: Date, timeZone: string): { year: number; month: number; day: number } {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).formatToParts(date);
+
+    return {
+      year: Number(parts.find((part) => part.type === 'year')?.value),
+      month: Number(parts.find((part) => part.type === 'month')?.value),
+      day: Number(parts.find((part) => part.type === 'day')?.value)
+    };
   }
+
+  function shiftDateParts(
+    parts: { year: number; month: number; day: number },
+    days: number
+  ): { year: number; month: number; day: number } {
+    const shifted = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + days));
+
+    return {
+      year: shifted.getUTCFullYear(),
+      month: shifted.getUTCMonth() + 1,
+      day: shifted.getUTCDate()
+    };
+  }
+
+  function getTimeZoneOffsetMs(date: Date, timeZone: string): number {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false
+    }).formatToParts(date);
+
+    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    const hour = Number(values.hour === '24' ? '0' : values.hour);
+    const asUtc = Date.UTC(
+      Number(values.year),
+      Number(values.month) - 1,
+      Number(values.day),
+      hour,
+      Number(values.minute),
+      Number(values.second)
+    );
+
+    return asUtc - date.getTime();
+  }
+
+  function zonedDateTimeToUtc(
+    parts: { year: number; month: number; day: number },
+    hour: number,
+    minute: number,
+    second: number,
+    millisecond: number,
+    timeZone: string
+  ): Date {
+    const localAsUtc = Date.UTC(parts.year, parts.month - 1, parts.day, hour, minute, second, millisecond);
+    const firstOffset = getTimeZoneOffsetMs(new Date(localAsUtc), timeZone);
+    const firstResult = new Date(localAsUtc - firstOffset);
+    const secondOffset = getTimeZoneOffsetMs(firstResult, timeZone);
+
+    return new Date(localAsUtc - secondOffset);
+  }
+
+  function startOfPragueDayUtc(parts: { year: number; month: number; day: number }): Date {
+    return zonedDateTimeToUtc(parts, 0, 0, 0, 0, CHART_TIME_ZONE);
+  }
+
+  function endOfPragueDayUtc(parts: { year: number; month: number; day: number }): Date {
+    return zonedDateTimeToUtc(parts, 23, 59, 59, 999, CHART_TIME_ZONE);
+  }
+
+  function getTrendRangeDates(range: TrendRange): { from: string; to: string; label: string } {
+    const now = new Date();
+    const todayPrague = getDatePartsInTimeZone(now, CHART_TIME_ZONE);
+
+    if (range === 'today') {
+      return {
+        from: startOfPragueDayUtc(todayPrague).toISOString(),
+        to: now.toISOString(),
+        label: 'dnešek'
+      };
+    }
+
+    if (range === 'yesterday') {
+      const yesterdayPrague = shiftDateParts(todayPrague, -1);
+
+      return {
+        from: startOfPragueDayUtc(yesterdayPrague).toISOString(),
+        to: endOfPragueDayUtc(yesterdayPrague).toISOString(),
+        label: 'včerejšek'
+      };
+    }
+
+    if (range === 'week') {
+      const start = new Date(now);
+      start.setDate(start.getDate() - 7);
+      return { from: start.toISOString(), to: now.toISOString(), label: 'posledních 7 dní' };
+    }
+
+    const start = new Date(now);
+    start.setMonth(start.getMonth() - 1);
+    return { from: start.toISOString(), to: now.toISOString(), label: 'poslední měsíc' };
+  }
+
+  function getTrendHistoryLimit(range: TrendRange): number {
+    if (range === 'today') return 288;
+    if (range === 'yesterday') return 288;
+    return 500;
+  }
+
+  function getTrendTargetPointCount(range: TrendRange): number {
+    if (range === 'today') return 96;      // 15min buckets from 5min data
+    if (range === 'yesterday') return 96;  // 15min buckets from 5min data
+    if (range === 'week') return 28;       // 6h trend buckets
+    return 30;                             // daily trend buckets
+  }
+
+  async function handleTrendRangeChange(range: TrendRange) {
+    if (selectedTrendRange === range) return;
+    selectedTrendRange = range;
+
+    if (isValidGatewayId(selectedGatewayId)) {
+      await loadTrendData(selectedGatewayId, range);
+    }
+  }
+  function downsampleTrendPoints(values: TrendPoint[], targetCount: number): TrendPoint[] {
+    if (values.length <= targetCount) return values;
+
+    const result: TrendPoint[] = [];
+    const bucketSize = values.length / targetCount;
+
+    for (let bucketIndex = 0; bucketIndex < targetCount; bucketIndex += 1) {
+      const start = Math.floor(bucketIndex * bucketSize);
+      const end = Math.floor((bucketIndex + 1) * bucketSize);
+      const bucket = values.slice(start, Math.max(end, start + 1));
+
+      if (bucket.length === 0) continue;
+
+      const avgValue = bucket.reduce((sum, point) => sum + point.value, 0) / bucket.length;
+
+      const representativePoint =
+              bucketIndex === 0
+                      ? bucket[0]
+                      : bucketIndex === targetCount - 1
+                              ? bucket[bucket.length - 1]
+                              : bucket[Math.floor(bucket.length / 2)];
+
+      result.push({
+        value: Number(avgValue.toFixed(2)),
+        time: representativePoint.time,
+        label: representativePoint.label
+      });
+    }
+
+    return result;
+  }
+
+  async function loadTrendData(id: string, range: TrendRange = selectedTrendRange) {
+    if (!isValidGatewayId(id)) return;
+
+    const { from, to } = getTrendRangeDates(range);
+    console.info('[dashboard] chart range', range, { from, to });
+    const targetPointCount = getTrendTargetPointCount(range);
+
+    const response =
+      range === 'week'
+        ? await getTelemetryTrends(id, from, to, '6h').catch(() => ({ items: [] }))
+        : range === 'month'
+          ? await getTelemetryTrends(id, from, to, '1d').catch(() => ({ items: [] }))
+          : await getTelemetryHistory(id, from, to, getTrendHistoryLimit(range)).catch(() => ({ items: [] }));
+
+    const historyItems = getHistoryItems(response);
+
+    temperatureTrend = downsampleTrendPoints(
+      trendValues(
+        historyItems,
+        ['temperature', 'telemetryTemperature', 'avgTemperature'],
+        current?.temperature,
+        current?.receivedAtUtc
+      ),
+      targetPointCount
+    );
+
+    pressureTrend = downsampleTrendPoints(
+      trendValues(
+        historyItems,
+        ['pressure', 'telemetryPressure', 'avgPressure'],
+        current?.pressure,
+        current?.receivedAtUtc
+      ),
+      targetPointCount
+    );
+
+    humidityTrend = downsampleTrendPoints(
+      trendValues(
+        historyItems,
+        ['humidity', 'telemetryHumidity', 'avgHumidity'],
+        current?.humidity,
+        current?.receivedAtUtc
+      ),
+      targetPointCount
+    );
+  }
+
 
   function statusDotClass(status: Gateway['status']): string {
     if (status === 'online') return 'bg-emerald-500';
@@ -90,25 +300,48 @@
   function trendValues(
     items: unknown[],
     keys: string[],
-    fallback: number | null | undefined
-  ): number[] {
-    const values = items
-      .map((item) => {
+    fallback: number | null | undefined,
+    fallbackTime?: string | null
+  ): TrendPoint[] {
+    const values: TrendPoint[] = items
+      .map((item): TrendPoint | null => {
         const record = item as Record<string, unknown>;
+        const time =
+          typeof record.receivedAtUtc === 'string'
+            ? record.receivedAtUtc
+            : typeof record.received_at_utc === 'string'
+              ? record.received_at_utc
+              : typeof record.received_at === 'string'
+                ? record.received_at
+                : typeof record.measuredAtUtc === 'string'
+                  ? record.measuredAtUtc
+                  : typeof record.measured_at_utc === 'string'
+                    ? record.measured_at_utc
+                    : typeof record.measured_at === 'string'
+                      ? record.measured_at
+                      : typeof record.bucketStartUtc === 'string'
+                        ? record.bucketStartUtc
+                        : typeof record.bucket_start_utc === 'string'
+                          ? record.bucket_start_utc
+                          : typeof record.createdAt === 'string'
+                            ? record.createdAt
+                            : typeof record.created_at === 'string'
+                              ? record.created_at
+                              : undefined;
 
         for (const key of keys) {
           const value = toNumber(record[key]);
-          if (value !== null) return value;
+          if (value !== null) return { value, time };
         }
 
         return null;
       })
-      .filter((value): value is number => value !== null);
+      .filter((value): value is TrendPoint => value !== null);
 
     if (values.length > 0) return values;
 
     const fallbackValue = toNumber(fallback);
-    return fallbackValue === null ? [] : [fallbackValue];
+    return fallbackValue === null ? [] : [{ value: fallbackValue, time: fallbackTime ?? undefined }];
   }
 
   function getHistoryItems(response: unknown): unknown[] {
@@ -124,10 +357,10 @@
     return [];
   }
 
-  function appendTrendValue(values: number[], value: unknown): number[] {
+  function appendTrendValue(values: TrendPoint[], value: unknown, time?: string | null): TrendPoint[] {
     const nextValue = toNumber(value);
     if (nextValue === null) return values;
-    return [...values, nextValue].slice(-24);
+    return [...values, { value: nextValue, time: time ?? new Date().toISOString() }].slice(-500);
   }
 
   function normalizeTelemetryUpdate(input: unknown): Telemetry {
@@ -217,10 +450,8 @@
     pressureTrend = [];
     humidityTrend = [];
     error = '';
+    prediction = null;
 
-    const now = new Date();
-    const from = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
-    const to = now.toISOString();
 
     health = await getGatewayHealth(id).catch(() => null);
 
@@ -229,8 +460,8 @@
         gateway.id === id
           ? {
               ...gateway,
-              status: normalizeStatus(health.status),
-              lastTelemetryReceivedAt: health.lastTelemetryAtUtc ?? gateway.lastTelemetryReceivedAt ?? null
+              status: normalizeStatus(health?.status),
+              lastTelemetryReceivedAt: health?.lastTelemetryAtUtc ?? gateway.lastTelemetryReceivedAt ?? null
             }
           : gateway
       );
@@ -248,25 +479,9 @@
     if (current) {
       current = normalizeTelemetryUpdate(current);
     }
+    prediction = await getTelemetryPrediction(id).catch(() => null);
 
-    const historyResponse = await getTelemetryHistory(id, from, to, 500).catch(() => ({ items: [] }));
-    const historyItems = getHistoryItems(historyResponse);
-
-    temperatureTrend = trendValues(
-      historyItems,
-      ['temperature', 'telemetryTemperature', 'avgTemperature'],
-      current?.temperature
-    );
-    pressureTrend = trendValues(
-      historyItems,
-      ['pressure', 'telemetryPressure', 'avgPressure'],
-      current?.pressure
-    );
-    humidityTrend = trendValues(
-      historyItems,
-      ['humidity', 'telemetryHumidity', 'avgHumidity'],
-      current?.humidity
-    );
+    await loadTrendData(id);
 
     console.info('[dashboard] calling setupStream', id);
     setupStream(id);
@@ -311,9 +526,11 @@
     const normalizedTelemetry = normalizeTelemetryUpdate(telemetry);
     current = normalizedTelemetry;
 
-    temperatureTrend = appendTrendValue(temperatureTrend, normalizedTelemetry.temperature);
-    pressureTrend = appendTrendValue(pressureTrend, normalizedTelemetry.pressure);
-    humidityTrend = appendTrendValue(humidityTrend, normalizedTelemetry.humidity);
+    if (selectedTrendRange !== 'yesterday') {
+      temperatureTrend = appendTrendValue(temperatureTrend, normalizedTelemetry.temperature, normalizedTelemetry.receivedAtUtc);
+      pressureTrend = appendTrendValue(pressureTrend, normalizedTelemetry.pressure, normalizedTelemetry.receivedAtUtc);
+      humidityTrend = appendTrendValue(humidityTrend, normalizedTelemetry.humidity, normalizedTelemetry.receivedAtUtc);
+    }
 
     const telemetryRecord = normalizedTelemetry as Telemetry & Record<string, unknown>;
     const latestTime = normalizedTelemetry.receivedAtUtc ?? new Date().toISOString();
@@ -410,7 +627,7 @@
   });
 </script>
 
-<div class="app-shell">
+<div class="min-h-screen bg-slate-100">
   <Sidebar />
 
   <main class={`transition-[padding] duration-300 ${sidebarCollapsed ? 'lg:pl-20' : 'lg:pl-64'}`}>
@@ -456,7 +673,7 @@
           </div>
         </div>
       {:else}
-        <section class="panel panel-inner">
+        <section class="rounded-[2rem] border border-white/60 bg-white/90 p-6 shadow-[0_24px_80px_-48px_rgba(15,23,42,0.35)] backdrop-blur">
           <div class="mb-5 grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0px,0px)_minmax(0,0.35fr)] xl:items-start">
 
             <div class="w-full rounded-2xl border border-slate-100 bg-slate-50/70 px-4 py-3">
@@ -502,60 +719,49 @@
           </div>
         </section>
 
-        <section class="mt-8 grid gap-6">
-          <div class="panel panel-inner">
-            <div class="mb-5 flex items-center justify-between">
+        {#if prediction}
+          <section class="mt-8 rounded-[2rem] border border-white/60 bg-white/90 p-6 shadow-[0_24px_80px_-48px_rgba(15,23,42,0.35)] backdrop-blur">
+            <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div>
-                <h2 class="text-base font-semibold">Rychlý přehled posledních 24 h</h2>
-                <p class="text-sm text-slate-500">Teplota, tlak a vlhkost</p>
+                <h2 class="text-base font-semibold">Predikce počasí</h2>
+                <p class="mt-1 text-sm text-slate-500">
+                  Vygenerováno: {formatTime(prediction.generatedAtUtc)}
+                </p>
+              </div>
+
+              <div class="grid gap-3 sm:grid-cols-3 lg:min-w-[520px]">
+                <div class="rounded-2xl bg-slate-50 px-4 py-3">
+                  <p class="text-xs font-medium uppercase tracking-wide text-slate-500">Teplota</p>
+                  <p class="mt-1 text-sm font-semibold text-slate-900">{prediction.temperatureTrend}</p>
+                </div>
+                <div class="rounded-2xl bg-slate-50 px-4 py-3">
+                  <p class="text-xs font-medium uppercase tracking-wide text-slate-500">Tlak</p>
+                  <p class="mt-1 text-sm font-semibold text-slate-900">{prediction.pressureTrend}</p>
+                </div>
+                <div class="rounded-2xl bg-slate-50 px-4 py-3">
+                  <p class="text-xs font-medium uppercase tracking-wide text-slate-500">Vlhkost</p>
+                  <p class="mt-1 text-sm font-semibold text-slate-900">{prediction.humidityTrend}</p>
+                </div>
               </div>
             </div>
 
-            <div class="grid gap-6 lg:grid-cols-3">
-              <div class="rounded-3xl border border-slate-100 bg-slate-50/70 p-5 shadow-sm">
-                <div class="mb-2 flex items-center justify-between">
-                  <p class="text-sm font-medium text-slate-700">Teplota (°C)</p>
-                  <span class="text-sm font-semibold text-slate-900">{current?.temperature ?? '-'} °C</span>
-                </div>
-                {#if temperatureTrend.length > 0}
-                  <MiniLineChart values={temperatureTrend} unit="°C" />
-                {:else}
-                  <div class="grid h-[240px] place-items-center rounded-2xl border border-dashed border-slate-200 text-sm text-slate-400">
-                    Bez dat za posledních 24 h
-                  </div>
-                {/if}
-              </div>
+            <p class="mt-4 rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm font-medium leading-6 text-blue-900">
+              {prediction.summary}
+            </p>
+          </section>
+        {/if}
 
-              <div class="rounded-3xl border border-slate-100 bg-slate-50/70 p-5 shadow-sm">
-                <div class="mb-2 flex items-center justify-between">
-                  <p class="text-sm font-medium text-slate-700">Tlak (hPa)</p>
-                  <span class="text-sm font-semibold text-slate-900">{current?.pressure ?? '-'} hPa</span>
-                </div>
-                {#if pressureTrend.length > 0}
-                  <MiniLineChart values={pressureTrend} unit="hPa" />
-                {:else}
-                  <div class="grid h-[240px] place-items-center rounded-2xl border border-dashed border-slate-200 text-sm text-slate-400">
-                    Bez dat za posledních 24 h
-                  </div>
-                {/if}
-              </div>
-
-              <div class="rounded-3xl border border-slate-100 bg-slate-50/70 p-5 shadow-sm">
-                <div class="mb-2 flex items-center justify-between">
-                  <p class="text-sm font-medium text-slate-700">Vlhkost (%)</p>
-                  <span class="text-sm font-semibold text-slate-900">{current?.humidity ?? '-'} %</span>
-                </div>
-                {#if humidityTrend.length > 0}
-                  <MiniLineChart values={humidityTrend} unit="%" />
-                {:else}
-                  <div class="grid h-[240px] place-items-center rounded-2xl border border-dashed border-slate-200 text-sm text-slate-400">
-                    Bez dat za posledních 24 h
-                  </div>
-                {/if}
-              </div>
-            </div>
-          </div>
-          <aside class="panel">
+        <section class="mt-8 grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <TelemetryTrendPanel
+            current={current}
+            temperatureTrend={temperatureTrend}
+            pressureTrend={pressureTrend}
+            humidityTrend={humidityTrend}
+            selectedRange={selectedTrendRange}
+            rangeLabel={getTrendRangeDates(selectedTrendRange).label}
+            onRangeChange={handleTrendRangeChange}
+          />
+          <aside class="rounded-[2rem] border border-white/60 bg-white/90 p-6 shadow-[0_24px_80px_-48px_rgba(15,23,42,0.35)] backdrop-blur">
             <div class="mb-4 flex items-center justify-between">
               <h2 class="text-base font-semibold">Poslední notifikace</h2>
               <a href="/notifications" class="primary-link">Zobrazit vše</a>
@@ -609,7 +815,7 @@
           </aside>
         </section>
 
-        <section class="mt-8 panel">
+        <section class="mt-8 rounded-[2rem] border border-white/60 bg-white/90 p-6 shadow-[0_24px_80px_-48px_rgba(15,23,42,0.35)] backdrop-blur">
           <div class="mb-4 flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
             <div>
               <h2 class="text-base font-semibold">Všechny gatewaye</h2>

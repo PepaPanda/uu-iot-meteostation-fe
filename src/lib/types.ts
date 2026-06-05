@@ -44,3 +44,11 @@ export type NotificationItem = {
   isForAdminsOnly: boolean;
   acknowledged: boolean;
 };
+
+export type TelemetryPrediction = {
+  generatedAtUtc: string;
+  temperatureTrend: 'rising' | 'falling' | 'stable';
+  pressureTrend: 'rising' | 'falling' | 'stable';
+  humidityTrend: 'rising' | 'falling' | 'stable';
+  summary: string;
+};

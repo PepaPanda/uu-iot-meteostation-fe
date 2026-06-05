@@ -3,11 +3,11 @@
   import { page } from '$app/stores';
   import Sidebar from '$lib/components/Sidebar.svelte';
   import MetricCard from '$lib/components/MetricCard.svelte';
-  import MiniLineChart from '$lib/components/MiniLineChart.svelte';
   import StatusBadge from '$lib/components/StatusBadge.svelte';
-  import { getCurrentTelemetry, getTelemetryHistory, createTelemetryStream } from '$lib/api/telemetry';
+import { getCurrentTelemetry, getTelemetryHistory, createTelemetryStream, getTelemetryPrediction } from '$lib/api/telemetry';
   import type { Gateway, Telemetry } from '$lib/types';
   import { getGateway, getGatewayHealth } from '$lib/api/gateways';
+  import TelemetryTrendPanel, { type TrendPoint, type TrendRange } from '$lib/components/TelemetryTrendPanel.svelte';
   let gateway = $state<Gateway | null>(null);
   let current = $state<Telemetry | null>(null);
   let health = $state<{
@@ -17,11 +17,19 @@
     nodeBatteryLevel: number | null;
     nodeWifiStrength: number | null;
   } | null>(null);
-  let temperatureTrend = $state<number[]>([]);
+  let temperatureTrend = $state<TrendPoint[]>([]);
+  let pressureTrend = $state<TrendPoint[]>([]);
+  let humidityTrend = $state<TrendPoint[]>([]);
+  let selectedTrendRange = $state<TrendRange>('today');
   let stream = $state<EventSource | null>(null);
   let loading = $state(true);
   let loadError = $state('');
-  let sidebarCollapsed = $state(false);
+  let rotateSecretLoading = $state(false);
+  let rotatedGatewaySecret = $state('');
+  let rotateSecretError = $state('');
+let sidebarCollapsed = $state(false);
+
+let prediction = $state<{ generatedAtUtc?: string; temperatureTrend?: string; pressureTrend?: string; humidityTrend?: string; summary?: string } | null>(null);
 
   let id = $derived($page.params.id ?? '');
 
@@ -65,24 +73,148 @@
     return [];
   }
 
-  function telemetryTemperatureValues(items: unknown[], fallback: number | null | undefined): number[] {
+  function trendValues(
+    items: unknown[],
+    keys: string[],
+    fallback: number | null | undefined,
+    fallbackTime?: string | null
+  ): TrendPoint[] {
     const values = items
       .map((item) => {
         const record = item as Record<string, unknown>;
-        return toNumber(record.temperature ?? record.telemetryTemperature ?? record.avgTemperature);
+        const time =
+          typeof record.receivedAtUtc === 'string'
+            ? record.receivedAtUtc
+            : typeof record.measuredAtUtc === 'string'
+              ? record.measuredAtUtc
+              : typeof record.bucketStartUtc === 'string'
+                ? record.bucketStartUtc
+                : typeof record.created_at === 'string'
+                  ? record.created_at
+                  : typeof record.createdAt === 'string'
+                    ? record.createdAt
+                    : undefined;
+
+        for (const key of keys) {
+          const value = toNumber(record[key]);
+          if (value !== null) return { value, time };
+        }
+
+        return null;
       })
-      .filter((value): value is number => value !== null);
+      .filter((value): value is TrendPoint => value !== null);
 
     if (values.length > 0) return values;
 
     const fallbackValue = toNumber(fallback);
-    return fallbackValue === null ? [] : [fallbackValue];
+    return fallbackValue === null ? [] : [{ value: fallbackValue, time: fallbackTime ?? undefined }];
   }
 
-  function appendTrendValue(values: number[], value: unknown): number[] {
+  function appendTrendValue(values: TrendPoint[], value: unknown, time?: string | null): TrendPoint[] {
     const nextValue = toNumber(value);
     if (nextValue === null) return values;
-    return [...values, nextValue].slice(-500);
+    return [...values, { value: nextValue, time: time ?? new Date().toISOString() }].slice(-500);
+  }
+
+  function getTrendRangeDates(range: TrendRange): { from: string; to: string; label: string } {
+    const now = new Date();
+    const start = new Date(now);
+    const end = new Date(now);
+
+    if (range === 'today') {
+      start.setHours(0, 0, 0, 0);
+      return { from: start.toISOString(), to: now.toISOString(), label: 'dnešek' };
+    }
+
+    if (range === 'yesterday') {
+      start.setDate(start.getDate() - 1);
+      start.setHours(0, 0, 0, 0);
+      end.setDate(end.getDate() - 1);
+      end.setHours(23, 59, 59, 999);
+      return { from: start.toISOString(), to: end.toISOString(), label: 'včerejšek' };
+    }
+
+    if (range === 'week') {
+      start.setDate(start.getDate() - 7);
+      return { from: start.toISOString(), to: now.toISOString(), label: 'posledních 7 dní' };
+    }
+
+    start.setMonth(start.getMonth() - 1);
+    return { from: start.toISOString(), to: now.toISOString(), label: 'poslední měsíc' };
+  }
+
+  function getTrendHistoryLimit(range: TrendRange): number {
+    if (range === 'today') return 96;
+    if (range === 'yesterday') return 96;
+    if (range === 'week') return 56;
+    return 60;
+  }
+
+  async function loadTrendData(range: TrendRange = selectedTrendRange) {
+    if (!id) return;
+
+    const { from, to } = getTrendRangeDates(range);
+    const limit = getTrendHistoryLimit(range);
+    const historyResponse = await getTelemetryHistory(id, from, to, limit).catch(() => ({ items: [] }));
+    const historyItems = getHistoryItems(historyResponse);
+
+    temperatureTrend = trendValues(
+      historyItems,
+      ['temperature', 'telemetryTemperature', 'avgTemperature'],
+      current?.temperature,
+      current?.receivedAtUtc
+    );
+    pressureTrend = trendValues(
+      historyItems,
+      ['pressure', 'telemetryPressure', 'avgPressure'],
+      current?.pressure,
+      current?.receivedAtUtc
+    );
+    humidityTrend = trendValues(
+      historyItems,
+      ['humidity', 'telemetryHumidity', 'avgHumidity'],
+      current?.humidity,
+      current?.receivedAtUtc
+    );
+  }
+
+  async function handleTrendRangeChange(range: TrendRange) {
+    if (selectedTrendRange === range) return;
+    selectedTrendRange = range;
+    await loadTrendData(range);
+  }
+
+  async function rotateGatewaySecret() {
+    if (!id || rotateSecretLoading) return;
+
+    const confirmed = window.confirm(
+      'Opravdu chceš obnovit gateway token? Starý token přestane fungovat a nový se zobrazí pouze jednou.'
+    );
+
+    if (!confirmed) return;
+
+    rotateSecretLoading = true;
+    rotatedGatewaySecret = '';
+    rotateSecretError = '';
+
+    try {
+      const response = await fetch(`/api/gateways/${id}/rotate-secret`, {
+        method: 'POST',
+        credentials: 'include'
+      });
+
+      const body = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        throw new Error(body?.message ?? 'Token gatewaye se nepodařilo obnovit.');
+      }
+
+      rotatedGatewaySecret = body?.secret ?? '';
+    } catch (error) {
+      rotateSecretError = error instanceof Error ? error.message : 'Token gatewaye se nepodařilo obnovit.';
+    } finally {
+      rotateSecretLoading = false;
+    }
   }
 
   async function load() {
@@ -101,6 +233,7 @@
         .then((response) => response.telemetry)
         .catch(() => null);
       health = await getGatewayHealth(id).catch(() => null);
+      prediction = await getTelemetryPrediction(id).catch(() => null);
 
       if (gateway) {
         gateway = {
@@ -111,18 +244,18 @@
         };
       }
 
-      const now = new Date();
-      const from = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
-      const historyResponse = await getTelemetryHistory(id, from, now.toISOString(), 500).catch(() => ({ items: [] }));
-      const historyItems = getHistoryItems(historyResponse);
-      temperatureTrend = telemetryTemperatureValues(historyItems, current?.temperature);
+      await loadTrendData();
 
       stream = createTelemetryStream(id);
       stream.onmessage = (event) => {
         try {
           const parsed = JSON.parse(event.data);
           current = parsed.data ?? parsed;
-          temperatureTrend = appendTrendValue(temperatureTrend, current?.temperature);
+          if (selectedTrendRange !== 'yesterday') {
+            temperatureTrend = appendTrendValue(temperatureTrend, current?.temperature, current?.receivedAtUtc);
+            pressureTrend = appendTrendValue(pressureTrend, current?.pressure, current?.receivedAtUtc);
+            humidityTrend = appendTrendValue(humidityTrend, current?.humidity, current?.receivedAtUtc);
+          }
         } catch {}
       };
 
@@ -210,6 +343,37 @@
           <MetricCard label="Wi‑Fi" icon="📶" value={health?.nodeWifiStrength ?? '-'} unit="dBm" />
         </section>
 
+        {#if prediction}
+          <section class="mt-8 rounded-[2rem] border border-white/60 bg-white/90 p-6 shadow-[0_24px_80px_-48px_rgba(15,23,42,0.35)] backdrop-blur">
+            <div class="flex flex-col gap-2">
+              <h2 class="text-lg font-semibold text-slate-950">Predikce počasí</h2>
+              <p class="text-sm text-slate-500">
+                Vygenerováno: {formatDateTime(prediction.generatedAtUtc)}
+              </p>
+            </div>
+
+            <div class="mt-6 grid gap-4 md:grid-cols-3">
+              <div class="rounded-2xl bg-slate-50 p-4">
+                <p class="text-sm text-slate-500">Teplota</p>
+                <p class="mt-2 font-semibold text-slate-950">{prediction.temperatureTrend ?? '-'} </p>
+              </div>
+
+              <div class="rounded-2xl bg-slate-50 p-4">
+                <p class="text-sm text-slate-500">Tlak</p>
+                <p class="mt-2 font-semibold text-slate-950">{prediction.pressureTrend ?? '-'}</p>
+              </div>
+
+              <div class="rounded-2xl bg-slate-50 p-4">
+                <p class="text-sm text-slate-500">Vlhkost</p>
+                <p class="mt-2 font-semibold text-slate-950">{prediction.humidityTrend ?? '-'}</p>
+              </div>
+            </div>
+
+            <div class="mt-4 rounded-2xl border border-blue-100 bg-blue-50 p-4 text-sm text-slate-700">
+              {prediction.summary}
+            </div>
+          </section>
+        {/if}
         <section class="mt-8 grid gap-6 lg:grid-cols-[360px_minmax(0,1fr)]">
           <aside class="rounded-[2rem] border border-white/60 bg-white/90 p-6 shadow-[0_24px_80px_-48px_rgba(15,23,42,0.35)] backdrop-blur">
             <div class="mb-5 flex items-center justify-between gap-3">
@@ -242,27 +406,49 @@
                 <dt class="text-slate-500">Poslední přenos</dt>
                 <dd class="mt-1 font-semibold text-slate-900">{formatDateTime(health?.lastTelemetryAtUtc ?? gateway?.lastTelemetryReceivedAt ?? current?.receivedAtUtc)}</dd>
               </div>
+
+              <div class="rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3">
+                <dt class="text-slate-500">Gateway token</dt>
+                <dd class="mt-3 space-y-3">
+                  <button
+                          type="button"
+                          class="inline-flex w-full items-center justify-center rounded-xl bg-amber-500 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-amber-600 disabled:cursor-not-allowed disabled:opacity-60"
+                          disabled={rotateSecretLoading}
+                          onclick={rotateGatewaySecret}
+                  >
+                    {rotateSecretLoading ? 'Obnovuji token…' : 'Obnovit token gatewaye'}
+                  </button>
+
+                  <p class="text-xs leading-5 text-amber-800">
+                    Nový token se zobrazí pouze jednou. Po obnovení ho zkopíruj do gateway konfigurace.
+                  </p>
+
+                  {#if rotatedGatewaySecret}
+                    <div class="rounded-xl border border-amber-200 bg-white p-3">
+                      <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-amber-700">Nový token</p>
+                      <code class="block break-all rounded-lg bg-slate-white p-3 text-xs text-black">{rotatedGatewaySecret}</code>
+                    </div>
+                  {/if}
+
+                  {#if rotateSecretError}
+                    <p class="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-700">
+                      {rotateSecretError}
+                    </p>
+                  {/if}
+                </dd>
+              </div>
             </dl>
           </aside>
 
-          <section class="rounded-[2rem] border border-white/60 bg-white/90 p-6 shadow-[0_24px_80px_-48px_rgba(15,23,42,0.35)] backdrop-blur">
-            <div class="mb-5 flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
-              <div>
-                <h2 class="text-lg font-semibold text-slate-950">Graf teploty za 24 h</h2>
-                <p class="mt-1 text-sm text-slate-500">Vývoj teploty podle telemetry historie</p>
-              </div>
-            </div>
-
-            {#if temperatureTrend.length > 0}
-              <div class="rounded-3xl border border-slate-100 bg-slate-50/70 p-5 shadow-sm">
-                <MiniLineChart values={temperatureTrend} unit="°C" />
-              </div>
-            {:else}
-              <div class="grid h-[260px] place-items-center rounded-3xl border border-dashed border-slate-200 bg-slate-50 text-sm text-slate-500">
-                Bez dat za posledních 24 h
-              </div>
-            {/if}
-          </section>
+          <TelemetryTrendPanel
+            current={current}
+            temperatureTrend={temperatureTrend}
+            pressureTrend={pressureTrend}
+            humidityTrend={humidityTrend}
+            selectedRange={selectedTrendRange}
+            rangeLabel={getTrendRangeDates(selectedTrendRange).label}
+            onRangeChange={handleTrendRangeChange}
+          />
         </section>
       {/if}
     </div>
