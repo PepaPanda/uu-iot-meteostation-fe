@@ -22,7 +22,7 @@ export default defineConfig(
 		rules: {
 			// typescript-eslint strongly recommend that you do not use the no-undef lint rule on TypeScript projects.
 			// see: https://typescript-eslint.io/troubleshooting/faqs/eslint/#i-get-errors-from-the-no-undef-rule-about-global-variables-not-being-defined-even-though-there-are-no-typescript-errors
-			"no-undef": 'off'
+			'no-undef': 'off'
 		}
 	},
 	{
@@ -34,6 +34,12 @@ export default defineConfig(
 				parser: ts.parser,
 				svelteConfig
 			}
+		},
+		rules: {
+			// Plain string paths are used throughout the app. Enforcing resolve() would couple
+			// every link and goto() to the physical route-group structure (e.g. /(app)/gateways/[id]),
+			// which hurts readability and makes routes harder to move. Opt out of this opinionated rule.
+			'svelte/no-navigation-without-resolve': 'off'
 		}
 	}
 );
